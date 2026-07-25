@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "openmso"
+version = "0.1.0"
+description = "OpenMSO Capture Protocol (OCP): framing, CaptureServer, CaptureClient"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+# preserve_order keeps config.set value maps in the order the client sent
+# them (application order matters, e.g. probe_factor before vdiv).
+serde_json = { version = "1", features = ["preserve_order"] }
