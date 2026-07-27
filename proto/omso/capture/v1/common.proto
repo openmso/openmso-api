@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// Vocabulary shared between the wire protocol (capture.proto) and the plugin
+// manifest (manifest.proto). Kept separate so packaging tooling that reads
+// manifests does not have to pull in the whole capture schema.
+
+syntax = "proto3";
+
+package omso.capture.v1;
+
+// A manufacturer's front-panel trace colour, named rather than specified.
+//
+// Named because the frontend renders in both light and dark themes, and a
+// literal #RRGGBB that reads well on black is often unreadable on white. The
+// protocol says which colour the instrument's front panel uses; picking the
+// two hex values that convey "yellow" against each background is the GUI's
+// job, and only the GUI has the context to do it.
+//
+// Deliberately a short list. These are Siglent's; the set will be extended
+// from a survey of what is actually on the market. Unknown values decode to
+// UNSPECIFIED on older frontends, which fall back to their own scheme, so
+// adding colours later breaks nothing.
+enum ChannelColor {
+  CHANNEL_COLOR_UNSPECIFIED = 0;
+  COLOR_YELLOW = 1;
+  COLOR_MAGENTA = 2;
+  COLOR_CYAN = 3;
+  COLOR_GREEN = 4;
+}

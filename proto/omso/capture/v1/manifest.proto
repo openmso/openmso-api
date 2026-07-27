@@ -1,0 +1,84 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// OpenMSO plugin manifest — DRAFT.
+//
+// A plugin directory contains plugin.json, which is this message in protobuf's
+// canonical JSON mapping. Hand-written and hand-edited, but schema-checked, and
+// it shares a generator with the wire protocol.
+//
+// The frontend reads every manifest at startup to build its device list, so
+// nothing here may require launching the plugin.
+
+syntax = "proto3";
+
+package omso.capture.v1;
+
+import "common.proto";
+
+message PluginManifest {
+  string name = 1;                 // directory name; identifies the plugin
+  string description = 2;
+  string vendor = 3;
+  string version = 4;
+  string license = 5;
+
+  // argv to launch the plugin. "{python}" expands to the frontend's
+  // interpreter. Relative paths resolve against the plugin directory. The
+  // frontend appends --control and --events.
+  repeated string run = 6;
+
+  // Human-readable build hint for a source checkout; never executed.
+  string build = 7;
+
+  // USB devices this plugin claims. The frontend enumerates USB itself and
+  // matches against these, so a device appears in the UI without any plugin
+  // being launched. Also the source for the Flatpak device list and for
+  // generated udev rules.
+  //
+  // A routing hint, not a description: list every ID the supported family
+  // might present. Which model is actually attached gets resolved by the
+  // plugin at Hello and reported in Describe.
+  repeated UsbId usb_ids = 8;
+
+  // --device URL schemes this plugin accepts: "usb", "fd", "tcp", "vxi11",
+  // "serial", "demo". Network devices cannot be enumerated, so this is what
+  // populates the "add a device by address" plugin picker.
+  repeated string url_schemes = 9;
+
+  // Manufacturer's front-panel channel colours. Optional, and a placeholder
+  // for now — populated as hardware support expands.
+  ChannelPalette palette = 10;
+}
+
+// Trace colours matching the physical instrument, so a capture on screen looks
+// like the one on the bench: Siglent CH1 is yellow, CH2 magenta, and a user
+// tracing a probe should not have to translate.
+//
+// Lives in the manifest because the convention is usually the manufacturer's,
+// not the model's, so one palette covers a whole family and is available
+// before any plugin is launched. A plugin that knows better overrides it
+// per channel via Channel.color in Describe; see README 7.3 for precedence.
+message ChannelPalette {
+  // In channel order: index 0 is the first analog channel (CH1). Siglent is
+  // [COLOR_YELLOW, COLOR_MAGENTA, COLOR_CYAN, COLOR_GREEN].
+  repeated ChannelColor analog = 1;
+
+  // In channel order from D0. Manufacturers commonly repeat a short run of
+  // colours across a wide logic pod, so a frontend cycles this list when it
+  // runs out rather than inventing colours.
+  repeated ChannelColor logic = 2;
+}
+
+message UsbId {
+  // lsusb notation, lowercase hex: "04b4:8613". Matches how these are written
+  // in udev rules and Flatpak manifests, and survives JSON round-tripping
+  // without turning into a decimal integer nobody recognises.
+  string id = 1;
+
+  string note = 2;
+
+  // Device enumerates with this ID before firmware upload, and re-enumerates
+  // as a different ID afterwards. The frontend still offers it, and the plugin
+  // performs the upload during Open.
+  bool needs_firmware = 3;
+}

@@ -1,241 +1,218 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Frontend-side OCP client: launches (or connects to) a capture server.
+//! Frontend side of OCP: launch a plugin, drive its control socket, and read
+//! its event stream.
 //!
-//! A background reader thread resolves request responses and hands
-//! notifications to a user callback. The callback runs on the reader thread —
-//! keep it quick (append to buffers; do heavy processing elsewhere).
-//!
-//! Rust counterpart of `python/openmso/client.py`.
+//! The frontend listens on both sockets before spawning the plugin, which then
+//! dials them, so there is no window in which the plugin can find nothing to
+//! connect to.
 
-use std::collections::HashMap;
-use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Condvar, Mutex};
-use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use serde_json::{json, Value};
+use nng::{Protocol, Socket};
 
-use crate::framing::MessageStream;
-use crate::PROTOCOL_VERSION;
+use crate::encoding::{CODECS, ENCODINGS};
+use crate::proto::{
+    request, response, AcquireMode, AcquireStart, AcquireStop, Config, Describe, Description,
+    Event, GetConfig, Hello, HelloResult, Request, Reset, Response, SetConfig, Shutdown,
+};
+use crate::transport::{self, Endpoints};
+use crate::{Error, Result};
 
-const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
-
-/// Error returned by the remote capture server, or a local transport failure.
-#[derive(Debug, Clone)]
-pub struct CaptureError {
-    pub code: i64,
-    pub message: String,
-    pub data: Option<Value>,
-}
-
-impl CaptureError {
-    pub fn new(code: i64, message: impl Into<String>) -> Self {
-        CaptureError { code, message: message.into(), data: None }
-    }
-}
-
-impl std::fmt::Display for CaptureError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[{}] {}", self.code, self.message)
-    }
-}
-
-impl std::error::Error for CaptureError {}
-
-/// Called for each notification (a message with `method` but no `id`).
-pub type NotificationHandler =
-    Box<dyn Fn(&str, &Value, Option<&[u8]>) + Send + 'static>;
-
-struct Inner {
-    next_id: i64,
-    pending: HashMap<i64, Option<Value>>, // id -> response message once it arrives
-    eof: bool,
-}
-
-struct Shared {
-    stream: Arc<MessageStream>,
-    inner: Mutex<Inner>,
-    cvar: Condvar,
-    handler: Mutex<Option<NotificationHandler>>,
-}
+/// Long enough for the slowest thing a plugin does while answering a request,
+/// which is an fx2 firmware upload.
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub struct CaptureClient {
-    shared: Arc<Shared>,
-    proc: Option<Child>,
-    reader: Option<JoinHandle<()>>,
+    child: Child,
+    control: Socket,
+    events: Socket,
+    /// Kept for its Drop, which removes the socket directory.
+    _endpoints: Endpoints,
+    seq: u32,
+    capture_id: u64,
 }
 
 impl CaptureClient {
-    fn start(stream: MessageStream, proc: Option<Child>,
-             handler: Option<NotificationHandler>) -> Self {
-        let shared = Arc::new(Shared {
-            stream: Arc::new(stream),
-            inner: Mutex::new(Inner { next_id: 0, pending: HashMap::new(), eof: false }),
-            cvar: Condvar::new(),
-            handler: Mutex::new(handler),
-        });
-        let reader = {
-            let shared = shared.clone();
-            std::thread::spawn(move || read_loop(shared))
-        };
-        CaptureClient { shared, proc, reader: Some(reader) }
-    }
+    /// Spawn `argv`, appending the device URL and the two socket URLs.
+    pub fn launch(argv: &[String], device: &str) -> Result<Self> {
+        let (program, rest) = argv
+            .split_first()
+            .ok_or_else(|| Error::Protocol("plugin has an empty argv".into()))?;
 
-    // -- constructors -----------------------------------------------------
-    /// Spawn a capture-server subprocess speaking OCP on its stdio.
-    ///
-    /// The server's stderr is inherited so its diagnostics reach the user.
-    pub fn launch(argv: &[String], handler: Option<NotificationHandler>)
-        -> std::io::Result<Self>
-    {
-        let mut cmd = Command::new(&argv[0]);
-        cmd.args(&argv[1..])
+        let endpoints = Endpoints::new()?;
+        let control = transport::socket(Protocol::Req0)?;
+        transport::listen(&control, &endpoints.control)?;
+        transport::set_recv_timeout(&control, Some(REQUEST_TIMEOUT))?;
+        let events = transport::socket(Protocol::Pull0)?;
+        transport::listen(&events, &endpoints.events)?;
+
+        let child = Command::new(program)
+            .args(rest)
+            .args(["--device", device])
+            .args(["--control", &endpoints.control])
+            .args(["--events", &endpoints.events])
+            // Not a channel: the plugin watches it for EOF, which the OS
+            // delivers if this process dies, so no plugin is ever orphaned.
             .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
-        let mut proc = cmd.spawn()?;
-        let stdout = proc.stdout.take().expect("child stdout piped");
-        let stdin = proc.stdin.take().expect("child stdin piped");
-        let stream = MessageStream::new(Box::new(stdout), Box::new(stdin));
-        Ok(Self::start(stream, Some(proc), handler))
+            .stderr(Stdio::inherit())
+            .spawn()?;
+
+        Ok(CaptureClient { child, control, events, _endpoints: endpoints, seq: 0, capture_id: 0 })
     }
 
-    /// Connect to a capture server already listening on `host:port`.
-    pub fn connect(host: &str, port: u16, handler: Option<NotificationHandler>)
-        -> std::io::Result<Self>
-    {
-        let sock = TcpStream::connect((host, port))?;
-        let reader = sock.try_clone()?;
-        let stream = MessageStream::new(Box::new(reader), Box::new(sock));
-        Ok(Self::start(stream, None, handler))
+    pub fn set_request_timeout(&self, timeout: Option<Duration>) -> Result<()> {
+        transport::set_recv_timeout(&self.control, timeout)
     }
 
-    // -- API --------------------------------------------------------------
-    pub fn set_notification_handler(&self, handler: NotificationHandler) {
-        *self.shared.handler.lock().unwrap() = Some(handler);
+    pub fn set_event_timeout(&self, timeout: Option<Duration>) -> Result<()> {
+        transport::set_recv_timeout(&self.events, timeout)
     }
 
-    /// Send a request and block until the response arrives or `timeout` elapses.
-    pub fn request(&self, method: &str, params: Value, timeout: Duration)
-        -> Result<Value, CaptureError>
-    {
-        let id = {
-            let mut inner = self.shared.inner.lock().unwrap();
-            inner.next_id += 1;
-            let id = inner.next_id;
-            inner.pending.insert(id, None);
-            id
+    /// Capture ids are the frontend's to assign, so that an event arriving
+    /// before the `AcquireStart` reply still names a capture it knows about.
+    pub fn next_capture_id(&mut self) -> u64 {
+        self.capture_id += 1;
+        self.capture_id
+    }
+
+    pub fn hello(&mut self, client_name: &str, client_version: &str) -> Result<HelloResult> {
+        let hello = Hello {
+            protocol: crate::PROTOCOL_VERSION,
+            client_name: client_name.to_string(),
+            client_version: client_version.to_string(),
+            accept_encodings: ENCODINGS.iter().map(|e| *e as i32).collect(),
+            accept_codecs: CODECS.iter().map(|c| *c as i32).collect(),
         };
-        let msg = json!({"jsonrpc": "2.0", "id": id, "method": method,
-                         "params": params});
-        if let Err(e) = self.shared.stream.write_message(&msg, None) {
-            self.shared.inner.lock().unwrap().pending.remove(&id);
-            return Err(CaptureError::new(-1, format!("write failed: {e}")));
+        match self.request(request::Request::Hello(hello))? {
+            response::Response::Hello(r) => Ok(r),
+            other => Err(unexpected("Hello", &other)),
         }
-
-        let deadline = Instant::now() + timeout;
-        let mut inner = self.shared.inner.lock().unwrap();
-        loop {
-            if let Some(Some(_)) = inner.pending.get(&id) {
-                break;
-            }
-            if inner.eof {
-                inner.pending.remove(&id);
-                return Err(CaptureError::new(
-                    -1, "capture server exited before responding"));
-            }
-            let now = Instant::now();
-            if now >= deadline {
-                inner.pending.remove(&id);
-                return Err(CaptureError::new(
-                    -1, format!("no response to {method:?} within {timeout:?}")));
-            }
-            let (guard, _) = self.shared.cvar
-                .wait_timeout(inner, deadline - now).unwrap();
-            inner = guard;
-        }
-        let response = inner.pending.remove(&id).flatten().unwrap();
-        drop(inner);
-
-        if let Some(err) = response.get("error") {
-            return Err(CaptureError {
-                code: err.get("code").and_then(Value::as_i64).unwrap_or(-1),
-                message: err.get("message").and_then(Value::as_str)
-                    .unwrap_or("?").to_string(),
-                data: err.get("data").cloned(),
-            });
-        }
-        Ok(response.get("result").cloned().unwrap_or_else(|| json!({})))
     }
 
-    pub fn initialize(&self, client_name: &str) -> Result<Value, CaptureError> {
-        self.request("initialize", json!({
-            "protocol_version": PROTOCOL_VERSION,
-            "client": {"name": client_name, "version": CLIENT_VERSION},
-        }), Duration::from_secs(60))
-    }
-
-    /// Block until the reader thread observes EOF (the server went away).
-    pub fn wait_closed(&self) {
-        let inner = self.shared.inner.lock().unwrap();
-        drop(self.shared.cvar.wait_while(inner, |i| !i.eof).unwrap());
-    }
-
-    pub fn close(&mut self) {
-        let _ = self.request("shutdown", json!({}), Duration::from_secs(5));
-        if let Some(mut proc) = self.proc.take() {
-            let _ = proc.wait();
+    pub fn describe(&mut self) -> Result<Description> {
+        match self.request(request::Request::Describe(Describe {}))? {
+            response::Response::Describe(r) => Ok(r),
+            other => Err(unexpected("Describe", &other)),
         }
-        if let Some(reader) = self.reader.take() {
-            let _ = reader.join();
+    }
+
+    pub fn get_config(&mut self) -> Result<Config> {
+        match self.request(request::Request::GetConfig(GetConfig {}))? {
+            response::Response::GetConfig(r) => Ok(r),
+            other => Err(unexpected("GetConfig", &other)),
+        }
+    }
+
+    /// Sparse: only the fields present in `config` are applied. The result is
+    /// what the device settled on.
+    pub fn set_config(&mut self, config: Config) -> Result<Config> {
+        let request = SetConfig { config: Some(config) };
+        match self.request(request::Request::SetConfig(request))? {
+            response::Response::SetConfig(r) => Ok(r),
+            other => Err(unexpected("SetConfig", &other)),
+        }
+    }
+
+    pub fn acquire_start(&mut self, capture_id: u64, mode: AcquireMode) -> Result<()> {
+        let request = AcquireStart { capture_id, mode: mode as i32 };
+        match self.request(request::Request::AcquireStart(request))? {
+            response::Response::AcquireStart(_) => Ok(()),
+            other => Err(unexpected("AcquireStart", &other)),
+        }
+    }
+
+    pub fn acquire_stop(&mut self, capture_id: u64) -> Result<()> {
+        match self.request(request::Request::AcquireStop(AcquireStop { capture_id }))? {
+            response::Response::AcquireStop(_) => Ok(()),
+            other => Err(unexpected("AcquireStop", &other)),
+        }
+    }
+
+    pub fn reset(&mut self) -> Result<()> {
+        match self.request(request::Request::Reset(Reset {}))? {
+            response::Response::Reset(_) => Ok(()),
+            other => Err(unexpected("Reset", &other)),
+        }
+    }
+
+    /// Ask the plugin to exit, then reap it.
+    pub fn shutdown(&mut self) -> Result<()> {
+        let result = match self.request(request::Request::Shutdown(Shutdown {})) {
+            Ok(response::Response::Shutdown(_)) => Ok(()),
+            Ok(other) => Err(unexpected("Shutdown", &other)),
+            Err(e) => Err(e),
+        };
+        self.child.wait().ok();
+        result
+    }
+
+    /// Block for the next event. Times out per [`Self::set_event_timeout`].
+    pub fn next_event(&self) -> Result<Event> {
+        transport::recv(&self.events)
+    }
+
+    /// A second handle on the event stream, for frontends that read it on a
+    /// thread of their own while the control socket stays with the UI.
+    pub fn event_stream(&self) -> EventStream {
+        EventStream { socket: self.events.clone() }
+    }
+
+    fn request(&mut self, request: request::Request) -> Result<response::Response> {
+        self.seq = self.seq.wrapping_add(1);
+        let seq = self.seq;
+        transport::send(&self.control, &Request { seq, request: Some(request) })?;
+
+        let response: Response = transport::recv(&self.control)?;
+        if response.seq != seq {
+            return Err(Error::Protocol(format!(
+                "plugin answered request {seq} with a reply to {}",
+                response.seq
+            )));
+        }
+        match (response.error, response.response) {
+            (Some(e), _) => Err(Error::Remote(e)),
+            (None, Some(r)) => Ok(r),
+            (None, None) => Err(Error::Protocol("reply carries neither result nor error".into())),
         }
     }
 }
 
 impl Drop for CaptureClient {
     fn drop(&mut self) {
-        if self.proc.is_some() || self.reader.is_some() {
-            self.close();
-        }
+        // Kill rather than wait: a plugin that never answered Shutdown is
+        // exactly the one that would hang here.
+        self.child.kill().ok();
+        self.child.wait().ok();
     }
 }
 
-fn read_loop(shared: Arc<Shared>) {
-    loop {
-        match shared.stream.read_message() {
-            Ok(Some((msg, payload))) => {
-                let has_id = msg.get("id").map(|v| !v.is_null()).unwrap_or(false);
-                let method = msg.get("method").and_then(Value::as_str);
-                match method {
-                    // Response to one of our requests.
-                    None if has_id => {
-                        let id = msg["id"].as_i64().unwrap_or(-1);
-                        let mut inner = shared.inner.lock().unwrap();
-                        if inner.pending.contains_key(&id) {
-                            inner.pending.insert(id, Some(msg));
-                            shared.cvar.notify_all();
-                        }
-                    }
-                    // Notification from the server.
-                    Some(method) => {
-                        let params = msg.get("params").cloned()
-                            .unwrap_or_else(|| json!({}));
-                        if let Some(h) = shared.handler.lock().unwrap().as_ref() {
-                            h(method, &params, payload.as_deref());
-                        }
-                    }
-                    None => {} // id-less response: none expected in v0
-                }
-            }
-            Ok(None) => break, // EOF
-            Err(e) => {
-                eprintln!("omso: capture server stream error: {e}");
-                break;
-            }
-        }
+pub struct EventStream {
+    socket: Socket,
+}
+
+impl EventStream {
+    pub fn next_event(&self) -> Result<Event> {
+        transport::recv(&self.socket)
     }
-    let mut inner = shared.inner.lock().unwrap();
-    inner.eof = true;
-    shared.cvar.notify_all();
+
+    pub fn set_timeout(&self, timeout: Option<Duration>) -> Result<()> {
+        transport::set_recv_timeout(&self.socket, timeout)
+    }
+}
+
+/// Every request has exactly one legal reply arm, so anything else is a plugin
+/// bug worth naming.
+fn unexpected(request: &str, got: &response::Response) -> Error {
+    let name = match got {
+        response::Response::Hello(_) => "Hello",
+        response::Response::Describe(_) => "Describe",
+        response::Response::GetConfig(_) => "GetConfig",
+        response::Response::SetConfig(_) => "SetConfig",
+        response::Response::AcquireStart(_) => "AcquireStart",
+        response::Response::AcquireStop(_) => "AcquireStop",
+        response::Response::Reset(_) => "Reset",
+        response::Response::Shutdown(_) => "Shutdown",
+    };
+    Error::Protocol(format!("{request} answered with a {name} result"))
 }
