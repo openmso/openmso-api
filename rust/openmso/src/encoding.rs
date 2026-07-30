@@ -41,8 +41,8 @@ pub fn accepts(negotiated: &[i32], encoding: SampleEncoding) -> bool {
 
 /// Run-length encode packed samples as `(varint run, unitsize bytes)` pairs.
 ///
-/// Worst case — every sample different — is one byte per sample of overhead,
-/// which is why chunking happens on the packed side.
+/// Worst case, every sample different, costs one byte per sample; chunking
+/// therefore happens on the packed side.
 pub fn encode_transition(packed: &[u8], unitsize: usize) -> Vec<u8> {
     assert!(unitsize > 0, "unitsize must be positive");
     let mut out = Vec::new();
@@ -151,7 +151,7 @@ mod tests {
     }
 
     #[test]
-    fn runs_survive_a_round_trip() {
+    fn runs_round_trip() {
         roundtrip(&[], 1);
         roundtrip(&[7], 1);
         roundtrip(&[1, 1, 1, 2, 2, 3], 1);
@@ -160,7 +160,7 @@ mod tests {
     }
 
     #[test]
-    fn an_idle_bus_costs_almost_nothing() {
+    fn idle_bus_collapses_to_one_run() {
         let idle = vec![0u8; 100_000];
         assert!(encode_transition(&idle, 1).len() < 10, "one run, one value");
     }
@@ -173,7 +173,7 @@ mod tests {
     }
 
     #[test]
-    fn a_short_count_is_an_error_not_a_truncated_buffer() {
+    fn a_short_count_is_an_error() {
         let encoded = encode_transition(&[1, 1, 2], 1);
         assert!(decode_transition(&encoded, 1, 2).is_err());
         // A value cut off after its run length.
@@ -182,7 +182,7 @@ mod tests {
     }
 
     #[test]
-    fn negotiation_always_leaves_the_mandatory_member() {
+    fn negotiation_keeps_the_mandatory_member() {
         let packed = SampleEncoding::Packed as i32;
         let transition = SampleEncoding::Transition as i32;
 

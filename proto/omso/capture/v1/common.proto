@@ -1,25 +1,38 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// Vocabulary shared between the wire protocol (capture.proto) and the plugin
-// manifest (manifest.proto). Kept separate so packaging tooling that reads
-// manifests does not have to pull in the whole capture schema.
+// Vocabulary shared by the wire protocol and the plugin manifest. Kept
+// separate so packaging tooling that reads manifests need not pull in the
+// capture schema.
 
 syntax = "proto3";
 
 package omso.capture.v1;
 
-// A manufacturer's front-panel trace colour, named rather than specified.
+message Empty {}
+
+message Error {
+  ErrorCode code = 1;
+  string message = 2;
+}
+
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  ERROR_INVALID_REQUEST = 1;      // malformed, or wrong state for this request
+  ERROR_UNSUPPORTED = 2;          // valid request, plugin/device cannot do it
+  ERROR_DEVICE = 3;               // device rejected or misbehaved
+  ERROR_DEVICE_DISCONNECTED = 4;
+  ERROR_BUSY = 5;                 // acquisition in progress
+  reserved 6;                     // was ERROR_NOT_OPEN
+  ERROR_TIMEOUT = 7;
+  ERROR_INTERNAL = 8;
+}
+
+// A front-panel trace colour, named rather than specified: a literal #RRGGBB
+// that reads well on black is often unreadable on white, and only the frontend
+// knows which theme it is drawing in.
 //
-// Named because the frontend renders in both light and dark themes, and a
-// literal #RRGGBB that reads well on black is often unreadable on white. The
-// protocol says which colour the instrument's front panel uses; picking the
-// two hex values that convey "yellow" against each background is the GUI's
-// job, and only the GUI has the context to do it.
-//
-// Deliberately a short list. These are Siglent's; the set will be extended
-// from a survey of what is actually on the market. Unknown values decode to
-// UNSPECIFIED on older frontends, which fall back to their own scheme, so
-// adding colours later breaks nothing.
+// Unknown values decode to UNSPECIFIED, where the frontend falls back to its
+// own scheme, so the list can be extended without breaking older frontends.
 enum ChannelColor {
   CHANNEL_COLOR_UNSPECIFIED = 0;
   COLOR_YELLOW = 1;

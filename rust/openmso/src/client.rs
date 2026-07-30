@@ -180,8 +180,8 @@ impl CaptureClient {
 
 impl Drop for CaptureClient {
     fn drop(&mut self) {
-        // Kill rather than wait: a plugin that never answered Shutdown is
-        // exactly the one that would hang here.
+        // Kill rather than wait: a plugin that never answered Shutdown is the
+        // one that would hang here.
         self.child.kill().ok();
         self.child.wait().ok();
     }
@@ -201,8 +201,7 @@ impl EventStream {
     }
 }
 
-/// Every request has exactly one legal reply arm, so anything else is a plugin
-/// bug worth naming.
+/// Every request has exactly one legal reply arm; anything else is a plugin bug.
 fn unexpected(request: &str, got: &response::Response) -> Error {
     let name = match got {
         response::Response::Hello(_) => "Hello",

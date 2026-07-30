@@ -1,0 +1,185 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// The data plane: everything a plugin pushes to the frontend over the nng
+// PUSH/PULL stream socket.
+
+syntax = "proto3";
+
+package omso.capture.v1;
+
+import "common.proto";
+
+message Event {
+  oneof event {
+    CaptureBegin     capture_begin     = 1;
+    AcquisitionBegin acquisition_begin = 2;
+    CaptureData      data              = 3;
+    CaptureTrigger   trigger           = 4;
+    AcquisitionEnd   acquisition_end   = 5;
+    CaptureEnd       capture_end       = 6;
+    Status           status            = 7;
+    Log              log               = 8;
+    DeviceLost       device_lost       = 9;
+  }
+}
+
+// Once per AcquireStart, before any data. Fixes the sample format for the
+// whole capture.
+message CaptureBegin {
+  uint64 capture_id = 1;
+  double samplerate = 2;          // Sa/s, as actually achieved
+  repeated Stream streams = 3;
+}
+
+// One acquisition — a triggered frame, or the single unbounded run of a
+// streaming device. ACQUIRE_SINGLE and ACQUIRE_SNAPSHOT produce exactly one.
+message AcquisitionBegin {
+  uint64 capture_id = 1;
+  uint64 acquisition = 2;         // from 0, increments within the capture
+
+  // Seconds from the trigger instant to sample 0. Negative when samples
+  // precede the trigger, which is the usual case.
+  double t0 = 3;
+
+  // Samples in this acquisition, when known ahead of transfer. 0 = unbounded.
+  uint64 sample_count = 4;
+}
+
+message AcquisitionEnd {
+  uint64 capture_id = 1;
+  uint64 acquisition = 2;
+
+  // Samples the device could not deliver at the head of this acquisition,
+  // e.g. a streaming overrun. The frontend renders a gap rather than silently
+  // splicing.
+  uint64 dropped_samples = 3;
+}
+
+message CaptureEnd {
+  uint64 capture_id = 1;
+  Error error = 2;                // absent on a clean end
+}
+
+message Stream {
+  uint32 id = 1;                  // unique within the capture
+
+  // Analog streams carry exactly one channel — each has its own scale and
+  // offset. Logic streams carry up to 8 * unitsize channels, packed.
+  repeated string channels = 2;
+
+  oneof format {
+    AnalogFormat analog = 3;
+    LogicFormat logic = 4;
+  }
+}
+
+// Samples are raw device codes: value = code * scale + offset, in unit. Codes
+// rather than floats because an 8-bit scope then costs one byte per sample and
+// stays lossless.
+message AnalogFormat {
+  SampleType type = 1;
+  double scale = 2;
+  double offset = 3;
+  string unit = 4;                // "V", "A", ...
+  uint32 digits = 5;              // significant decimal digits, display hint
+}
+
+// Bit-packed: unitsize bytes per sample, channel i of this stream is bit i,
+// little-endian across the unit.
+message LogicFormat {
+  uint32 unitsize = 1;            // bytes per sample
+}
+
+// All little-endian.
+enum SampleType {
+  SAMPLE_TYPE_UNSPECIFIED = 0;
+  SAMPLE_INT8 = 1;
+  SAMPLE_UINT8 = 2;
+  SAMPLE_INT16 = 3;
+  SAMPLE_UINT16 = 4;
+  SAMPLE_FLOAT32 = 5;
+  SAMPLE_FLOAT64 = 6;
+}
+
+message CaptureData {
+  uint64 capture_id = 1;
+  uint64 acquisition = 2;
+  uint32 stream = 3;
+
+  uint64 seq = 4;                 // from 0, per (capture, acquisition, stream)
+  uint64 first_sample = 5;        // absolute sample index within the acquisition
+  uint64 sample_count = 6;
+
+  SampleEncoding encoding = 7;
+  Codec codec = 8;
+
+  // Length of payload after codec is undone, before encoding is expanded, so
+  // a decoder can size its buffer in one allocation. Under CODEC_NONE this is
+  // just the payload length and tells a reader nothing, so treat a mismatch
+  // there as a bug in the sender rather than a reason to reject the frame.
+  uint64 decoded_len = 9;
+
+  bytes payload = 10;
+}
+
+enum SampleEncoding {
+  SAMPLE_ENCODING_UNSPECIFIED = 0;
+
+  // Samples verbatim, per AnalogFormat/LogicFormat. Mandatory for every
+  // implementation.
+  SAMPLE_ENCODING_PACKED = 1;
+
+  // Run-length encoded, logic streams only: a sequence of
+  // (varint run_length, unitsize bytes of sample value) pairs. Makes an idle
+  // bus almost free, which is what a bandwidth-starved device needs.
+  SAMPLE_ENCODING_TRANSITION = 2;
+}
+
+enum Codec {
+  CODEC_UNSPECIFIED = 0;
+  CODEC_NONE = 1;                 // mandatory
+  CODEC_ZSTD = 2;
+
+  // Device link only. A plugin must transcode this away before the host hop;
+  // frontends never offer it in Hello.
+  CODEC_HEATSHRINK = 3;
+}
+
+message CaptureTrigger {
+  uint64 capture_id = 1;
+  uint64 acquisition = 2;
+  uint64 sample = 3;              // index of the triggering sample
+}
+
+message Status {
+  State state = 1;
+  string detail = 2;
+}
+
+enum State {
+  STATE_UNSPECIFIED = 0;
+  STATE_IDLE = 1;
+  STATE_ARMED = 2;
+  STATE_TRIGGERED = 3;
+  STATE_TRANSFERRING = 4;
+  STATE_STOPPING = 5;
+}
+
+message Log {
+  LogLevel level = 1;
+  string message = 2;
+}
+
+enum LogLevel {
+  LOG_LEVEL_UNSPECIFIED = 0;
+  LOG_DEBUG = 1;
+  LOG_INFO = 2;
+  LOG_WARNING = 3;
+  LOG_ERROR = 4;
+}
+
+// The device went away. Any running capture is over; the frontend should shut
+// the plugin down and re-enumerate.
+message DeviceLost {
+  string reason = 1;
+}

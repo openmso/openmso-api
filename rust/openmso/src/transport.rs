@@ -14,7 +14,7 @@ use crate::{Error, Result};
 /// worst case expands a chunk by one byte per sample.
 pub const MAX_PAYLOAD: usize = 1 << 20;
 
-/// Applied to every socket rather than trusted to the default, per the spike.
+/// Inbound message ceiling, applied to every socket.
 pub const RECV_MAX_SIZE: usize = 8 << 20;
 
 /// Build a socket with the options every OCP endpoint needs.
@@ -24,9 +24,8 @@ pub fn socket(protocol: Protocol) -> Result<Socket> {
     s.set_opt::<SendTimeout>(Some(Duration::from_secs(30)))?;
     if protocol == Protocol::Req0 {
         // nng re-sends a request whose reply is slower than this timer, and
-        // the far end runs it a second time — measured, not theoretical. On a
-        // local socket the pipe either exists or breaks, so resend buys
-        // nothing; zero disables it.
+        // the far end then runs it twice. On a local socket the pipe either
+        // exists or breaks, so resend buys nothing; zero disables it.
         s.set_opt::<ResendTime>(Some(Duration::ZERO))?;
     }
     Ok(s)
@@ -154,7 +153,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn endpoints_are_private_and_vanish_with_the_frontend() {
+    fn endpoints_are_private_and_removed_on_drop() {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = {
@@ -175,7 +174,7 @@ mod tests {
     }
 
     #[test]
-    fn overlong_socket_paths_are_rejected_before_nng_sees_them() {
+    fn overlong_socket_paths_are_rejected() {
         let long = PathBuf::from("/run/user/1000").join("x".repeat(100));
         assert!(check_sun_path(&long).is_err());
         assert!(check_sun_path(Path::new("/run/user/1000/openmso/7f3a/ctl")).is_ok());

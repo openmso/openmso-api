@@ -73,9 +73,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_key_is_rejected_rather_than_ignored() {
-        // Canonical JSON parsers reject unknown fields, which is what makes
-        // the manifest schema-checked rather than advisory.
+    fn unknown_keys_are_rejected() {
         assert!(parse(r#"{"name": "demo", "runn": ["./demo"]}"#).is_err());
     }
 

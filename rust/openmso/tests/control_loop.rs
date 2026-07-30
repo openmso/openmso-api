@@ -197,7 +197,7 @@ fn nothing_is_answered_before_hello() {
 }
 
 #[test]
-fn a_running_capture_blocks_configuration_but_not_stopping() {
+fn a_running_capture_blocks_configuration() {
     let mut h = Harness::start();
     h.hello();
     h.ok(request::Request::AcquireStart(AcquireStart {
@@ -205,8 +205,7 @@ fn a_running_capture_blocks_configuration_but_not_stopping() {
         mode: AcquireMode::AcquireContinuous as i32,
     }));
 
-    // The conformance rule: the control loop answers while the acquisition
-    // thread is still running.
+    // The control loop must answer while the acquisition thread runs.
     for request in [
         request::Request::SetConfig(SetConfig { config: Some(Config::default()) }),
         request::Request::GetConfig(GetConfig {}),
@@ -225,7 +224,7 @@ fn a_running_capture_blocks_configuration_but_not_stopping() {
 }
 
 #[test]
-fn a_capture_that_ends_on_its_own_still_returns_to_ready() {
+fn a_capture_that_ends_on_its_own_returns_to_ready() {
     let mut h = Harness::start();
     h.hello();
     h.ok(request::Request::AcquireStart(AcquireStart {
@@ -234,8 +233,7 @@ fn a_capture_that_ends_on_its_own_still_returns_to_ready() {
     }));
     h.drain_capture();
 
-    // Stopping a capture that already finished is a race the frontend should
-    // not have to lose.
+    // Stopping an already-finished capture is a race the frontend must win.
     h.ok(request::Request::AcquireStop(AcquireStop { capture_id: 1 }));
     h.ok(request::Request::Describe(Describe {}));
 }
@@ -256,7 +254,7 @@ fn reset_returns_to_ready_from_a_running_capture() {
 }
 
 #[test]
-fn a_request_with_no_arm_is_refused_and_the_loop_survives() {
+fn a_request_with_no_arm_is_refused() {
     let mut h = Harness::start();
     h.hello();
     let response = h.send_raw_empty();
@@ -268,7 +266,7 @@ fn a_request_with_no_arm_is_refused_and_the_loop_survives() {
 }
 
 #[test]
-fn shutdown_is_answered_before_the_process_would_exit() {
+fn shutdown_is_answered() {
     let mut h = Harness::start();
     h.hello();
     assert_eq!(

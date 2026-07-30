@@ -3,8 +3,7 @@
 // OpenMSO plugin manifest — DRAFT.
 //
 // A plugin directory contains plugin.json, which is this message in protobuf's
-// canonical JSON mapping. Hand-written and hand-edited, but schema-checked, and
-// it shares a generator with the wire protocol.
+// canonical JSON mapping: hand-edited, but schema-checked.
 //
 // The frontend reads every manifest at startup to build its device list, so
 // nothing here may require launching the plugin.
@@ -45,19 +44,17 @@ message PluginManifest {
   // populates the "add a device by address" plugin picker.
   repeated string url_schemes = 9;
 
-  // Manufacturer's front-panel channel colours. Optional, and a placeholder
-  // for now — populated as hardware support expands.
+  // Manufacturer's front-panel channel colours. Optional.
   ChannelPalette palette = 10;
 }
 
 // Trace colours matching the physical instrument, so a capture on screen looks
-// like the one on the bench: Siglent CH1 is yellow, CH2 magenta, and a user
-// tracing a probe should not have to translate.
+// like the one on the bench: Siglent CH1 is yellow, CH2 magenta.
 //
 // Lives in the manifest because the convention is usually the manufacturer's,
 // not the model's, so one palette covers a whole family and is available
-// before any plugin is launched. A plugin that knows better overrides it
-// per channel via Channel.color in Describe; see README 7.3 for precedence.
+// before any plugin is launched. Channel.color in Describe overrides it for a
+// plugin that knows better.
 message ChannelPalette {
   // In channel order: index 0 is the first analog channel (CH1). Siglent is
   // [COLOR_YELLOW, COLOR_MAGENTA, COLOR_CYAN, COLOR_GREEN].
@@ -78,7 +75,7 @@ message UsbId {
   string note = 2;
 
   // Device enumerates with this ID before firmware upload, and re-enumerates
-  // as a different ID afterwards. The frontend still offers it, and the plugin
-  // performs the upload during Open.
+  // as a different ID afterwards. The frontend still offers it; the plugin
+  // performs the upload while answering Hello.
   bool needs_firmware = 3;
 }

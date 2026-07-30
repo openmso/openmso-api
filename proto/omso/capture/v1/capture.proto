@@ -2,20 +2,19 @@
 //
 // OpenMSO Capture Protocol (OCP) v1 — DRAFT.
 //
-// Normative schema. Frontends and plugins exchange these messages over nng:
-// Request/Response on a REQ/REP control socket, Event on a PUSH/PULL stream
-// socket. See README.md in this directory for the transport, the state
-// machine, and the rationale.
+// Normative schema, and the entry point: importing this file also brings in
+// the device model (device.proto) and the data plane (stream.proto).
+//
+// Frontends and plugins exchange these messages over nng: Request/Response on
+// a REQ/REP control socket, Event on a PUSH/PULL stream socket.
 
 syntax = "proto3";
 
 package omso.capture.v1;
 
-import "common.proto";
-
-// ===========================================================================
-// Control channel — one Request in, one Response out (nng REQ/REP)
-// ===========================================================================
+import public "common.proto";
+import public "device.proto";
+import public "stream.proto";
 
 message Request {
   // Echoed in the Response. Debugging aid only: nng matches request to reply.
@@ -51,33 +50,10 @@ message Response {
   }
 }
 
-message Empty {}
-
-message Error {
-  ErrorCode code = 1;
-  string message = 2;
-}
-
-enum ErrorCode {
-  ERROR_CODE_UNSPECIFIED = 0;
-  ERROR_INVALID_REQUEST = 1;      // malformed, or wrong state for this request
-  ERROR_UNSUPPORTED = 2;          // valid request, plugin/device cannot do it
-  ERROR_DEVICE = 3;               // device rejected or misbehaved
-  ERROR_DEVICE_DISCONNECTED = 4;
-  ERROR_BUSY = 5;                 // acquisition in progress
-  reserved 6;                     // was ERROR_NOT_OPEN, before Open was dropped
-  ERROR_TIMEOUT = 7;
-  ERROR_INTERNAL = 8;
-}
-
-// ===========================================================================
-// Lifecycle
-// ===========================================================================
-
 // First and only handshake. The device to drive was named by the --device URL
 // on the command line; the plugin connects to it while answering this request,
-// so a device that is absent, busy or unreachable comes back as a normal
-// Error rather than as a process that died with a message on stderr.
+// so a device that is absent, busy or unreachable comes back as a normal Error
+// rather than as a process that died with a message on stderr.
 message Hello {
   uint32 protocol = 1;            // OCP major version the client speaks; 1 here
   string client_name = 2;
@@ -97,7 +73,7 @@ message HelloResult {
   // What the plugin found at the far end of the --device URL. For a plugin
   // covering a family, this is where the specific model is resolved: the
   // manifest only claimed the device might be handled, this reports what it
-  // actually is. See README §7.
+  // actually is.
   DeviceInfo device = 6;
 
   // The negotiated intersection. A plugin MUST NOT emit an encoding or codec
@@ -133,235 +109,16 @@ message Shutdown {}
 // replacement plugin process after a crash, in particular.
 message Reset {}
 
-// ===========================================================================
-// Description — what this device has, and what values it will accept
-// ===========================================================================
-
 message Describe {}
-
-// Authoritative for this connection, and re-queryable: on some devices,
-// enabling a channel changes the available sample rates. DeviceInfo is not
-// repeated here — HelloResult already reported it.
-message Description {
-  repeated Channel channels = 2;
-  DeviceLimits limits = 3;
-  AnalogLimits analog = 4;        // absent if the device has no analog channels
-  LogicLimits logic = 5;          // absent if the device has no logic channels
-  repeated VendorOption vendor_options = 6;
-}
-
-message Channel {
-  string id = 1;                  // stable identifier, e.g. "C1", "D0"
-  string name = 2;                // front-panel label
-  ChannelKind kind = 3;
-  uint32 index = 4;               // position within its kind, from 0
-
-  // This model's front-panel colour for this channel, when the plugin knows
-  // it more precisely than the manifest palette does. UNSPECIFIED falls back
-  // to the palette, then to the frontend's own scheme.
-  ChannelColor color = 5;
-}
-
-enum ChannelKind {
-  CHANNEL_KIND_UNSPECIFIED = 0;
-  CHANNEL_ANALOG = 1;
-  CHANNEL_LOGIC = 2;
-}
-
-message DeviceLimits {
-  DoubleSet samplerate = 1;       // Sa/s
-  UintSet sample_depth = 2;       // samples per acquisition
-  bool samplerate_settable = 3;   // false => derived; the frontend may only read
-  bool sample_depth_settable = 4;
-  UintSet averaging = 5;
-  bool trigger_position = 6;      // pre-trigger positioning supported
-  uint32 max_enabled_channels = 7; // 0 = no aggregate limit
-}
-
-message AnalogLimits {
-  DoubleSet full_scale = 1;       // volts across the whole vertical range
-  DoubleRange offset = 2;         // volts
-  repeated Coupling couplings = 3;
-  DoubleSet probe_factors = 4;
-  DoubleSet impedances = 5;       // ohms
-  bool bandwidth_limit = 6;
-  bool invert = 7;
-  // Grid divisions, so a frontend can render a scope-like graticule and label
-  // full_scale as volts/div. 0 for devices with no grid concept.
-  uint32 vertical_divisions = 8;
-}
-
-message LogicLimits {
-  DoubleSet thresholds = 1;       // volts; empty => fixed threshold
-}
-
-// Settings this plugin understands that the schema above does not cover.
-// Explicitly outside the core contract: a frontend may surface these as a
-// generic key/value panel, and must work correctly while ignoring them.
-message VendorOption {
-  string key = 1;
-  string description = 2;
-  repeated string values = 3;     // empty => free-form string
-}
-
-// A permitted set of values: an explicit list of steps, or a range, never
-// both. An empty DoubleSet means the setting is not adjustable.
-message DoubleSet {
-  repeated double values = 1;     // ascending
-  DoubleRange range = 2;
-}
-
-message DoubleRange {
-  double min = 1;
-  double max = 2;
-  double step = 3;                // 0 = continuous
-}
-
-message UintSet {
-  repeated uint64 values = 1;     // ascending
-  UintRange range = 2;
-}
-
-message UintRange {
-  uint64 min = 1;
-  uint64 max = 2;
-  uint64 step = 3;
-}
-
-// ===========================================================================
-// Configuration
-// ===========================================================================
 
 message GetConfig {}
 
 message SetConfig {
   // Sparse: only fields present are applied. Application order within one
-  // SetConfig is the field order declared below (probe_factor before
+  // SetConfig is the field order declared in Config (probe_factor before
   // full_scale, so scaling is interpreted against the right probe).
   Config config = 1;
 }
-
-// Used for GetConfig results, SetConfig requests, and SetConfig results. A
-// SetConfig result reports the values the device actually settled on, which
-// may differ from those requested: devices snap to legal steps.
-message Config {
-  DeviceConfig device = 1;
-  repeated ChannelConfig channels = 2;
-  map<string, string> vendor = 3;
-}
-
-message DeviceConfig {
-  optional double samplerate = 1;   // Sa/s
-  optional uint64 sample_depth = 2; // samples per acquisition
-  Trigger trigger = 3;
-  optional uint32 averaging = 4;
-
-  // Read-only, present in results: sample_depth / samplerate. The frontend's
-  // timebase knob computes a rate and a depth; the protocol never takes a
-  // seconds-per-division setting.
-  optional double capture_span = 10;
-}
-
-message ChannelConfig {
-  string id = 1;
-  optional bool enabled = 2;
-
-  // Analog only.
-  optional double probe_factor = 3;
-  optional double full_scale = 4;   // volts across the whole vertical range
-  optional double offset = 5;       // volts at vertical centre
-  optional Coupling coupling = 6;
-  optional double impedance = 7;    // ohms
-  optional bool bandwidth_limit = 8;
-  optional bool invert = 9;
-
-  // Logic only.
-  optional double threshold = 20;   // volts
-}
-
-enum Coupling {
-  COUPLING_UNSPECIFIED = 0;
-  COUPLING_DC = 1;
-  COUPLING_AC = 2;
-  COUPLING_GND = 3;
-}
-
-// ===========================================================================
-// Trigger
-// ===========================================================================
-
-message Trigger {
-  oneof trigger {
-    Empty none = 1;               // free-run: acquire immediately
-    EdgeTrigger edge = 2;
-    PulseTrigger pulse = 3;
-    PatternTrigger pattern = 4;
-  }
-
-  // Fraction of sample_depth captured before the trigger instant, 0.0 to 1.0.
-  double position = 10;
-}
-
-enum TriggerKind {
-  TRIGGER_KIND_UNSPECIFIED = 0;
-  TRIGGER_NONE = 1;
-  TRIGGER_EDGE = 2;
-  TRIGGER_PULSE = 3;
-  TRIGGER_PATTERN = 4;
-}
-
-message EdgeTrigger {
-  string channel = 1;
-  Slope slope = 2;
-  double level = 3;               // volts; ignored on logic channels
-}
-
-message PulseTrigger {
-  string channel = 1;
-  Slope slope = 2;                // polarity of the pulse
-  double level = 3;               // volts; ignored on logic channels
-  Comparison comparison = 4;
-  double width = 5;               // seconds
-  double width_max = 6;           // seconds; only for COMPARISON_WITHIN
-}
-
-// Fires when every listed channel simultaneously matches. Channels omitted
-// from bits are don't-care.
-message PatternTrigger {
-  repeated PatternBit bits = 1;
-}
-
-message PatternBit {
-  string channel = 1;
-  BitMatch match = 2;
-}
-
-enum Slope {
-  SLOPE_UNSPECIFIED = 0;
-  SLOPE_RISING = 1;
-  SLOPE_FALLING = 2;
-  SLOPE_EITHER = 3;
-}
-
-enum Comparison {
-  COMPARISON_UNSPECIFIED = 0;
-  COMPARISON_LESS = 1;
-  COMPARISON_GREATER = 2;
-  COMPARISON_WITHIN = 3;
-}
-
-enum BitMatch {
-  BIT_MATCH_UNSPECIFIED = 0;
-  BIT_LOW = 1;
-  BIT_HIGH = 2;
-  BIT_RISING = 3;
-  BIT_FALLING = 4;
-  BIT_EITHER = 5;
-}
-
-// ===========================================================================
-// Acquisition
-// ===========================================================================
 
 message AcquireStart {
   // Assigned by the frontend, unique within the connection. Client-assigned so
@@ -388,183 +145,4 @@ enum AcquireMode {
   // Transfer whatever the device currently holds without re-arming, then
   // restore its previous run state. For bench instruments already running.
   ACQUIRE_SNAPSHOT = 3;
-}
-
-// ===========================================================================
-// Stream channel — plugin to frontend (nng PUSH/PULL)
-// ===========================================================================
-
-message Event {
-  oneof event {
-    CaptureBegin     capture_begin     = 1;
-    AcquisitionBegin acquisition_begin = 2;
-    CaptureData      data              = 3;
-    CaptureTrigger   trigger           = 4;
-    AcquisitionEnd   acquisition_end   = 5;
-    CaptureEnd       capture_end       = 6;
-    Status           status            = 7;
-    Log              log               = 8;
-    DeviceLost       device_lost       = 9;
-  }
-}
-
-// Once per AcquireStart, before any data. Fixes the sample format for the
-// whole capture.
-message CaptureBegin {
-  uint64 capture_id = 1;
-  double samplerate = 2;          // Sa/s, as actually achieved
-  repeated Stream streams = 3;
-}
-
-// One acquisition — a triggered frame, or the single unbounded run of a
-// streaming device. ACQUIRE_SINGLE and ACQUIRE_SNAPSHOT produce exactly one.
-message AcquisitionBegin {
-  uint64 capture_id = 1;
-  uint64 acquisition = 2;         // from 0, increments within the capture
-
-  // Seconds from the trigger instant to sample 0. Negative when samples
-  // precede the trigger, which is the usual case.
-  double t0 = 3;
-
-  // Samples in this acquisition, when known ahead of transfer. 0 = unbounded.
-  uint64 sample_count = 4;
-}
-
-message AcquisitionEnd {
-  uint64 capture_id = 1;
-  uint64 acquisition = 2;
-
-  // Samples the device could not deliver at the head of this acquisition,
-  // e.g. a streaming overrun. The frontend renders a gap rather than
-  // silently splicing.
-  uint64 dropped_samples = 3;
-}
-
-message CaptureEnd {
-  uint64 capture_id = 1;
-  Error error = 2;                // absent on a clean end
-}
-
-message Stream {
-  uint32 id = 1;                  // unique within the capture
-
-  // Analog streams carry exactly one channel — each has its own scale and
-  // offset. Logic streams carry up to 8 * unitsize channels, packed.
-  repeated string channels = 2;
-
-  oneof format {
-    AnalogFormat analog = 3;
-    LogicFormat logic = 4;
-  }
-}
-
-// Samples are raw device codes: value = code * scale + offset, in unit. Codes
-// rather than floats because an 8-bit scope then costs one byte per sample and
-// stays lossless.
-message AnalogFormat {
-  SampleType type = 1;
-  double scale = 2;
-  double offset = 3;
-  string unit = 4;                // "V", "A", ...
-  uint32 digits = 5;              // significant decimal digits, display hint
-}
-
-// Bit-packed: unitsize bytes per sample, channel i of this stream is bit i,
-// little-endian across the unit.
-message LogicFormat {
-  uint32 unitsize = 1;            // bytes per sample
-}
-
-// All little-endian.
-enum SampleType {
-  SAMPLE_TYPE_UNSPECIFIED = 0;
-  SAMPLE_INT8 = 1;
-  SAMPLE_UINT8 = 2;
-  SAMPLE_INT16 = 3;
-  SAMPLE_UINT16 = 4;
-  SAMPLE_FLOAT32 = 5;
-  SAMPLE_FLOAT64 = 6;
-}
-
-message CaptureData {
-  uint64 capture_id = 1;
-  uint64 acquisition = 2;
-  uint32 stream = 3;
-
-  uint64 seq = 4;                 // from 0, per (capture, acquisition, stream)
-  uint64 first_sample = 5;        // absolute sample index within the acquisition
-  uint64 sample_count = 6;
-
-  SampleEncoding encoding = 7;
-  Codec codec = 8;
-
-  // Length of payload after codec is undone, before encoding is expanded.
-  // Lets a decoder size its buffer in one allocation. Under CODEC_NONE this
-  // is just payload length and tells a reader nothing, so treat a mismatch
-  // there as a bug in the sender rather than as a reason to reject the frame.
-  uint64 decoded_len = 9;
-
-  bytes payload = 10;
-}
-
-enum SampleEncoding {
-  SAMPLE_ENCODING_UNSPECIFIED = 0;
-
-  // Samples verbatim, per AnalogFormat/LogicFormat. Every implementation
-  // must support this.
-  SAMPLE_ENCODING_PACKED = 1;
-
-  // Run-length encoded, logic streams only: a sequence of
-  // (varint run_length, unitsize bytes of sample value) pairs. Makes an idle
-  // bus almost free, which is what a bandwidth-starved device needs.
-  SAMPLE_ENCODING_TRANSITION = 2;
-}
-
-enum Codec {
-  CODEC_UNSPECIFIED = 0;
-  CODEC_NONE = 1;                 // mandatory
-  CODEC_ZSTD = 2;
-
-  // Device link only — see README §6. A plugin must transcode this away
-  // before the host hop; frontends never offer it in Hello.
-  CODEC_HEATSHRINK = 3;
-}
-
-message CaptureTrigger {
-  uint64 capture_id = 1;
-  uint64 acquisition = 2;
-  uint64 sample = 3;              // index of the triggering sample
-}
-
-message Status {
-  State state = 1;
-  string detail = 2;
-}
-
-enum State {
-  STATE_UNSPECIFIED = 0;
-  STATE_IDLE = 1;
-  STATE_ARMED = 2;
-  STATE_TRIGGERED = 3;
-  STATE_TRANSFERRING = 4;
-  STATE_STOPPING = 5;
-}
-
-message Log {
-  LogLevel level = 1;
-  string message = 2;
-}
-
-enum LogLevel {
-  LOG_LEVEL_UNSPECIFIED = 0;
-  LOG_DEBUG = 1;
-  LOG_INFO = 2;
-  LOG_WARNING = 3;
-  LOG_ERROR = 4;
-}
-
-// The device went away underneath us. Any running capture is over; the
-// frontend should Close and re-enumerate.
-message DeviceLost {
-  string reason = 1;
 }

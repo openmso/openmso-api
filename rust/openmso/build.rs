@@ -6,10 +6,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let proto_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../proto/omso/capture/v1")
         .canonicalize()?;
-    let files: Vec<PathBuf> = ["capture.proto", "common.proto", "manifest.proto"]
-        .iter()
-        .map(|f| proto_dir.join(f))
-        .collect();
+    let files: Vec<PathBuf> =
+        ["capture.proto", "common.proto", "device.proto", "manifest.proto", "stream.proto"]
+            .iter()
+            .map(|f| proto_dir.join(f))
+            .collect();
     for f in &files {
         println!("cargo:rerun-if-changed={}", f.display());
     }
@@ -17,8 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let descriptors = PathBuf::from(std::env::var("OUT_DIR")?).join("descriptors.bin");
     prost_build::Config::new()
         .file_descriptor_set_path(&descriptors)
-        // Aliases the receive buffer instead of copying it, which is the whole
-        // bulk path.
+        // Aliases the receive buffer instead of copying it.
         .bytes([".omso.capture.v1.CaptureData.payload"])
         .compile_protos(&files, &[&proto_dir])?;
 

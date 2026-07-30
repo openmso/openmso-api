@@ -2,7 +2,7 @@
 //! OpenMSO Capture Protocol v1 — Rust bindings.
 //!
 //! The generated message types live in [`proto`]; [`server`] and [`client`]
-//! are the two ends of the nng transport described in the OCP v1 design.
+//! are the two ends of the nng transport.
 
 pub mod client;
 pub mod encoding;
@@ -58,7 +58,6 @@ pub enum Error {
     Json(serde_json::Error),
     /// The peer sent something the protocol does not allow here.
     Protocol(String),
-    /// The far end refused the request.
     Remote(proto::Error),
 }
 

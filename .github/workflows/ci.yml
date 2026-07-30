@@ -9,3 +9,13 @@ jobs:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - run: cargo test
+
+  cpp:
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: cpp } }
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y cmake protobuf-compiler libprotobuf-dev libnng-dev
+      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      - run: cmake --build build -j
+      - run: ctest --test-dir build --output-on-failure
